@@ -90,6 +90,7 @@ public class QSAnimator implements Callback, PageListener, Listener, OnLayoutCha
             Log.w(TAG, "QS Not using page layout");
         }
         panel.setPageListener(this);
+        updateSettings();
     }
 
     public void onRtlChanged() {
@@ -113,7 +114,7 @@ public class QSAnimator implements Callback, PageListener, Listener, OnLayoutCha
     @Override
     public void onViewAttachedToWindow(View v) {
         Dependency.get(TunerService.class).addTunable(this, ALLOW_FANCY_ANIMATION,
-                MOVE_FULL_ROWS, QuickQSPanel.NUM_QUICK_TILES);
+                MOVE_FULL_ROWS);
     }
 
     @Override
@@ -133,9 +134,6 @@ public class QSAnimator implements Callback, PageListener, Listener, OnLayoutCha
             }
         } else if (MOVE_FULL_ROWS.equals(key)) {
             mFullRows = newValue == null || Integer.parseInt(newValue) != 0;
-        } else if (QuickQSPanel.NUM_QUICK_TILES.equals(key)) {
-            mNumQuickTiles = mQuickQsPanel.getNumQuickTiles(mQs.getContext());
-            clearAnimationState();
         }
         updateAnimators();
     }
@@ -231,10 +229,10 @@ public class QSAnimator implements Callback, PageListener, Listener, OnLayoutCha
             mAllViews.add(tileView);
             count++;
         }
+        View brightness = mQsPanel.getBrightnessView();
         if (mAllowFancy) {
             // Make brightness appear static position and alpha in through second half.
-            View brightness = mQsPanel.getBrightnessView();
-            if (brightness != null) {
+            if (brightness != null && !mQsPanel.isBrightnessViewBottom()) {
                 firstPageBuilder.addFloat(brightness, "translationY", heightDiff, 0);
                 mBrightnessAnimator = new TouchAnimator.Builder()
                         .addFloat(brightness, "alpha", 0, 1)
@@ -248,15 +246,20 @@ public class QSAnimator implements Callback, PageListener, Listener, OnLayoutCha
                     .setListener(this)
                     .build();
             // Fade in the tiles/labels as we reach the final position.
-            mFirstPageDelayedAnimator = new TouchAnimator.Builder()
+            TouchAnimator.Builder animationBuilder = new TouchAnimator.Builder()
                     .setStartDelay(EXPANDED_TILE_DELAY)
                     .addFloat(mQsPanel.getPageIndicator(), "alpha", 0, 1)
                     .addFloat(tileLayout, "alpha", 0, 1)
                     .addFloat(mQsPanel.getDivider(), "alpha", 0, 1)
-                    .addFloat(mQsPanel.getFooter().getView(), "alpha", 0, 1).build();
+                    .addFloat(mQsPanel.getFooter().getView(), "alpha", 0, 1);
             mAllViews.add(mQsPanel.getPageIndicator());
             mAllViews.add(mQsPanel.getDivider());
             mAllViews.add(mQsPanel.getFooter().getView());
+            if (brightness != null && mQsPanel.isBrightnessViewBottom()) {
+                mAllViews.add(brightness);
+                animationBuilder.addFloat(brightness, "alpha", 0, 1);
+            }
+            mFirstPageDelayedAnimator = animationBuilder.build();
             float px = 0;
             float py = 1;
             if (tiles.size() <= 3) {
@@ -270,13 +273,16 @@ public class QSAnimator implements Callback, PageListener, Listener, OnLayoutCha
             mTranslationXAnimator = translationXBuilder.build();
             mTranslationYAnimator = translationYBuilder.build();
         }
-        mNonfirstPageAnimator = new TouchAnimator.Builder()
+        TouchAnimator.Builder animationBuilder = new TouchAnimator.Builder()
                 .addFloat(mQuickQsPanel, "alpha", 1, 0)
                 .addFloat(mQsPanel.getPageIndicator(), "alpha", 0, 1)
                 .addFloat(mQsPanel.getDivider(), "alpha", 0, 1)
                 .setListener(mNonFirstPageListener)
-                .setEndDelay(.5f)
-                .build();
+                .setEndDelay(.5f);
+        if (brightness != null && mQsPanel.isBrightnessViewBottom()) {
+            animationBuilder.addFloat(brightness, "alpha", 0, 1);
+        }
+        mNonfirstPageAnimator = animationBuilder.build();
         mNonfirstPageDelayedAnimator = new TouchAnimator.Builder()
                 .setStartDelay(.14f)
                 .addFloat(tileLayout, "alpha", 0, 1).build();
@@ -401,4 +407,9 @@ public class QSAnimator implements Callback, PageListener, Listener, OnLayoutCha
             setPosition(mLastPosition);
         }
     };
+
+    public void updateSettings() {
+        mNumQuickTiles = mQuickQsPanel.getNumQuickTiles();
+        clearAnimationState();
+    }
 }

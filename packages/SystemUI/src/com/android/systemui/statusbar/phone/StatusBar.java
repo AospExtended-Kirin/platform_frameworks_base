@@ -183,6 +183,7 @@ import com.android.systemui.plugins.statusbar.NotificationSwipeActionHelper.Snoo
 import com.android.systemui.qs.QSFragment;
 import com.android.systemui.qs.QSPanel;
 import com.android.systemui.qs.QSTileHost;
+import com.android.systemui.qs.QuickQSPanel;
 import com.android.systemui.qs.car.CarQSFragment;
 import com.android.systemui.recents.Recents;
 import com.android.systemui.recents.ScreenPinningRequest;
@@ -396,6 +397,7 @@ public class StatusBar extends SystemUI implements DemoMode,
 
     // settings
     private QSPanel mQSPanel;
+    private QuickQSPanel mQuickQSPanel;
 
     // top bar
     private KeyguardStatusBarView mKeyguardStatusBar;
@@ -1023,6 +1025,7 @@ public class StatusBar extends SystemUI implements DemoMode,
                     mQSPanel = ((QSFragment) qs).getQsPanel();
                     mQSPanel.setBrightnessMirror(mBrightnessMirrorController);
                     mKeyguardStatusBar.setQSPanel(mQSPanel);
+                    mQuickQSPanel = ((QSFragment) qs).getQuickQsPanel();
                 }
             });
         }
@@ -3289,7 +3292,9 @@ public class StatusBar extends SystemUI implements DemoMode,
         if (mQSPanel != null) {
             mQSPanel.updateResources();
         }
-
+        if (mQuickQSPanel != null) {
+            mQuickQSPanel.updateResources();
+        }
         loadDimens();
 
         if (mStatusBarView != null) {
@@ -5257,6 +5262,9 @@ public class StatusBar extends SystemUI implements DemoMode,
             resolver.registerContentObserver(Settings.System.getUriFor(
                     Settings.System.ACCENT_PICKER),
                     false, this, UserHandle.USER_ALL);
+            resolver.registerContentObserver(Settings.System.getUriFor(
+                    Settings.System.QS_FOOTER_WARNINGS),
+                    false, this, UserHandle.USER_ALL);
         }
 
         @Override
@@ -5287,7 +5295,11 @@ public class StatusBar extends SystemUI implements DemoMode,
                 // Keeps us from overloading the system by performing these tasks every time.
                 unloadAccents();
                 updateAccents();
+            } else if (uri.equals(Settings.System.getUriFor(
+                    Settings.System.QS_FOOTER_WARNINGS))) {
+                setQsPanelOptions();
             }
+
         }
 
         public void update() {
@@ -5296,6 +5308,7 @@ public class StatusBar extends SystemUI implements DemoMode,
             setHeadsUpStoplist();
             setHeadsUpBlacklist();
             updateTheme();
+            setQsPanelOptions();
         }
     }
 
@@ -5315,6 +5328,12 @@ public class StatusBar extends SystemUI implements DemoMode,
         final String blackString = Settings.System.getString(mContext.getContentResolver(),
                     Settings.System.HEADS_UP_BLACKLIST_VALUES);
         splitAndAddToArrayList(mBlacklist, blackString, "\\|");
+    }
+
+    private void setQsPanelOptions() {
+        if (mQSPanel != null) {
+            mQSPanel.updateSettings();
+        }
     }
 
     private void updateNavigationBar() {
