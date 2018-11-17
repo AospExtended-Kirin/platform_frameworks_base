@@ -163,6 +163,7 @@ final class ProcessRecord {
     long lastRequestedGc;       // When we last asked the app to do a gc
     long lastLowMemory;         // When we last told the app that memory is low
     long lastProviderTime;      // The last time someone else was using a provider in this process.
+    long lastTopTime;           // The last time the process was in the TOP state or greater.
     boolean reportLowMemory;    // Set to true when waiting to report low mem
     boolean empty;              // Is this an empty background process?
     boolean cached;             // Is this a cached process?
@@ -380,6 +381,11 @@ final class ProcessRecord {
             TimeUtils.formatDuration(lastProviderTime, nowUptime, pw);
             pw.println();
         }
+        if (lastTopTime > 0) {
+            pw.print(prefix); pw.print("lastTopTime=");
+            TimeUtils.formatDuration(lastTopTime, nowUptime, pw);
+            pw.println();
+        }
         if (hasStartedServices) {
             pw.print(prefix); pw.print("hasStartedServices="); pw.println(hasStartedServices);
         }
@@ -515,6 +521,18 @@ final class ProcessRecord {
     }
 
     public void makeActive(IApplicationThread _thread, ProcessStatsService tracker) {
+        String seempStr = "app_uid=" + uid
+                            + ",app_pid=" + pid + ",oom_adj=" + curAdj
+                            + ",setAdj=" + setAdj + ",hasShownUi=" + (hasShownUi ? 1 : 0)
+                            + ",cached=" + (cached ? 1 : 0)
+                            + ",fA=" + (foregroundActivities ? 1 : 0)
+                            + ",fS=" + (foregroundServices ? 1 : 0)
+                            + ",systemNoUi=" + (systemNoUi ? 1 : 0)
+                            + ",curSchedGroup=" + curSchedGroup
+                            + ",curProcState=" + curProcState + ",setProcState=" + setProcState
+                            + ",killed=" + (killed ? 1 : 0) + ",killedByAm=" + (killedByAm ? 1 : 0)
+                            + ",debugging=" + (debugging ? 1 : 0);
+        android.util.SeempLog.record_str(386, seempStr);
         if (thread == null) {
             final ProcessState origBase = baseProcessTracker;
             if (origBase != null) {
@@ -541,6 +559,18 @@ final class ProcessRecord {
     }
 
     public void makeInactive(ProcessStatsService tracker) {
+        String seempStr = "app_uid=" + uid
+                            + ",app_pid=" + pid + ",oom_adj=" + curAdj
+                            + ",setAdj=" + setAdj + ",hasShownUi=" + (hasShownUi ? 1 : 0)
+                            + ",cached=" + (cached ? 1 : 0)
+                            + ",fA=" + (foregroundActivities ? 1 : 0)
+                            + ",fS=" + (foregroundServices ? 1 : 0)
+                            + ",systemNoUi=" + (systemNoUi ? 1 : 0)
+                            + ",curSchedGroup=" + curSchedGroup
+                            + ",curProcState=" + curProcState + ",setProcState=" + setProcState
+                            + ",killed=" + (killed ? 1 : 0) + ",killedByAm=" + (killedByAm ? 1 : 0)
+                            + ",debugging=" + (debugging ? 1 : 0);
+        android.util.SeempLog.record_str(387, seempStr);
         thread = null;
         final ProcessState origBase = baseProcessTracker;
         if (origBase != null) {
@@ -855,5 +885,9 @@ final class ProcessRecord {
             list[i] = pkgList.keyAt(i);
         }
         return list;
+    }
+
+    boolean hasForegroundServices() {
+        return foregroundServices;
     }
 }

@@ -114,11 +114,12 @@ public class HotspotControllerImpl implements HotspotController, WifiManager.Sof
     private void updateWifiStateListeners(boolean shouldListen) {
         mWifiStateReceiver.setListening(shouldListen);
         if (shouldListen) {
-            mWifiManager.registerSoftApCallback(
+            if(mWifiManager != null)
+                mWifiManager.registerSoftApCallback(
                     this,
                     Dependency.get(Dependency.MAIN_HANDLER));
-        } else {
-            mWifiManager.unregisterSoftApCallback(this);
+            } else {
+                mWifiManager.unregisterSoftApCallback(this);
         }
     }
 
@@ -134,6 +135,10 @@ public class HotspotControllerImpl implements HotspotController, WifiManager.Sof
 
     @Override
     public void setHotspotEnabled(boolean enabled) {
+        if (mWaitingForCallback) {
+            if (DEBUG) Log.d(TAG, "Ignoring setHotspotEnabled; waiting for callback.");
+            return;
+        }
         if (enabled) {
             OnStartTetheringCallback callback = new OnStartTetheringCallback();
             mWaitingForCallback = true;

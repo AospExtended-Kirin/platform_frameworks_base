@@ -338,11 +338,18 @@ public class TelephonyManager {
      * <p>
      * The {@link #EXTRA_STATE} extra indicates the new call state.
      * If a receiving app has {@link android.Manifest.permission#READ_CALL_LOG} permission, a second
-     * extra {@link #EXTRA_INCOMING_NUMBER} provides the phone number for incoming and outoing calls
-     * as a String.  Note: If the receiving app has
+     * extra {@link #EXTRA_INCOMING_NUMBER} provides the phone number for incoming and outgoing
+     * calls as a String.
+     * <p>
+     * If the receiving app has
      * {@link android.Manifest.permission#READ_CALL_LOG} and
      * {@link android.Manifest.permission#READ_PHONE_STATE} permission, it will receive the
-     * broadcast twice; one with the phone number and another without it.
+     * broadcast twice; one with the {@link #EXTRA_INCOMING_NUMBER} populated with the phone number,
+     * and another with it blank.  Due to the nature of broadcasts, you cannot assume the order
+     * in which these broadcasts will arrive, however you are guaranteed to receive two in this
+     * case.  Apps which are interested in the {@link #EXTRA_INCOMING_NUMBER} can ignore the
+     * broadcasts where {@link #EXTRA_INCOMING_NUMBER} is not present in the extras (e.g. where
+     * {@link Intent#hasExtra(String)} returns {@code false}).
      * <p class="note">
      * This was a {@link android.content.Context#sendStickyBroadcast sticky}
      * broadcast in version 1.0, but it is no longer sticky.
@@ -491,10 +498,19 @@ public class TelephonyManager {
     public static final String EXTRA_STATE_OFFHOOK = PhoneConstants.State.OFFHOOK.toString();
 
     /**
-     * The lookup key used with the {@link #ACTION_PHONE_STATE_CHANGED} broadcast
-     * for a String containing the incoming phone number.
-     * Only valid when the new call state is RINGING.
-     *
+     * Extra key used with the {@link #ACTION_PHONE_STATE_CHANGED} broadcast
+     * for a String containing the incoming or outgoing phone number.
+     * <p>
+     * This extra is only populated for receivers of the {@link #ACTION_PHONE_STATE_CHANGED}
+     * broadcast which have been granted the {@link android.Manifest.permission#READ_CALL_LOG} and
+     * {@link android.Manifest.permission#READ_PHONE_STATE} permissions.
+     * <p>
+     * For incoming calls, the phone number is only guaranteed to be populated when the
+     * {@link #EXTRA_STATE} changes from {@link #EXTRA_STATE_IDLE} to {@link #EXTRA_STATE_RINGING}.
+     * If the incoming caller is from an unknown number, the extra will be populated with an empty
+     * string.
+     * For outgoing calls, the phone number is only guaranteed to be populated when the
+     * {@link #EXTRA_STATE} changes from {@link #EXTRA_STATE_IDLE} to {@link #EXTRA_STATE_OFFHOOK}.
      * <p class="note">
      * Retrieve with
      * {@link android.content.Intent#getStringExtra(String)}.
@@ -1249,6 +1265,7 @@ public class TelephonyManager {
     @RequiresPermission(android.Manifest.permission.READ_PHONE_STATE)
     public String getDeviceId(int slotIndex) {
         // FIXME this assumes phoneId == slotIndex
+        android.util.SeempLog.record_str(8, ""+slotIndex);
         try {
             IPhoneSubInfo info = getSubscriberInfo();
             if (info == null)
@@ -1393,6 +1410,7 @@ public class TelephonyManager {
             android.Manifest.permission.ACCESS_FINE_LOCATION
     })
     public CellLocation getCellLocation() {
+        android.util.SeempLog.record(49);
         try {
             ITelephony telephony = getITelephony();
             if (telephony == null) {
@@ -1482,6 +1500,7 @@ public class TelephonyManager {
     @Deprecated
     @RequiresPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
     public List<NeighboringCellInfo> getNeighboringCellInfo() {
+        android.util.SeempLog.record(50);
         try {
             ITelephony telephony = getITelephony();
             if (telephony == null)
@@ -2715,6 +2734,7 @@ public class TelephonyManager {
      */
     @RequiresPermission(android.Manifest.permission.READ_PHONE_STATE)
     public String getSimSerialNumber(int subId) {
+        android.util.SeempLog.record_str(388, ""+subId);
         try {
             IPhoneSubInfo info = getSubscriberInfo();
             if (info == null)
@@ -2861,6 +2881,7 @@ public class TelephonyManager {
      */
     @RequiresPermission(android.Manifest.permission.READ_PHONE_STATE)
     public String getSubscriberId(int subId) {
+        android.util.SeempLog.record_str(389, ""+subId);
         try {
             IPhoneSubInfo info = getSubscriberInfo();
             if (info == null)
@@ -3090,6 +3111,7 @@ public class TelephonyManager {
             android.Manifest.permission.READ_PHONE_NUMBERS
     })
     public String getLine1Number(int subId) {
+        android.util.SeempLog.record_str(9, ""+subId);
         String number = null;
         try {
             ITelephony telephony = getITelephony();
@@ -4431,6 +4453,16 @@ public class TelephonyManager {
     }
 
     /**
+     * @hide
+     */
+    public void toggle2G(boolean twoGees) {
+        try {
+            getITelephony().toggle2G(twoGees);
+        } catch (RemoteException e) {
+        }
+    }
+
+    /**
      * Returns the MMS user agent.
      */
     public String getMmsUserAgent() {
@@ -5436,23 +5468,6 @@ public class TelephonyManager {
             Rlog.e(TAG, "getImsRegistration, RemoteException: " + e.getMessage());
         }
         return null;
-    }
-
-    /**
-     * @return true if the IMS resolver is busy resolving a binding and should not be considered
-     * available, false if the IMS resolver is idle.
-     * @hide
-     */
-    public boolean isResolvingImsBinding() {
-        try {
-            ITelephony telephony = getITelephony();
-            if (telephony != null) {
-                return telephony.isResolvingImsBinding();
-            }
-        } catch (RemoteException e) {
-            Rlog.e(TAG, "isResolvingImsBinding, RemoteException: " + e.getMessage());
-        }
-        return false;
     }
 
     /**

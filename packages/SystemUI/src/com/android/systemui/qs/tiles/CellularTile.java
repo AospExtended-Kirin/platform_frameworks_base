@@ -118,7 +118,7 @@ public class CellularTile extends QSTileImpl<SignalState> {
     }
 
     private void maybeShowDisableDialog() {
-        if (Prefs.getBoolean(mContext, QS_HAS_TURNED_OFF_MOBILE_DATA, false)) {
+        if (Prefs.getBoolean(mContext, QS_HAS_TURNED_OFF_MOBILE_DATA, true)) {
             // Directly turn off mobile data if the user has seen the dialog before.
             mDataController.setMobileDataEnabled(false);
             return;
@@ -245,7 +245,7 @@ public class CellularTile extends QSTileImpl<SignalState> {
 
         @Override
         public void setMobileDataIndicators(IconState statusIcon, IconState qsIcon, int statusType,
-                int qsType, boolean activityIn, boolean activityOut, String typeContentDescription,
+                int qsType, boolean activityIn, boolean activityOut, int volteIcon, String typeContentDescription,
                 String description, boolean isWide, int subId, boolean roaming) {
             if (qsIcon == null) {
                 // Not data sim, don't display.

@@ -133,7 +133,7 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
     private int mNavigationBarMode;
     private boolean mAccessibilityFeedbackEnabled;
     private AccessibilityManager mAccessibilityManager;
-    private MagnificationContentObserver mMagnificationObserver;
+    private SettingsObserver mSettingsObserver;
     private ContentResolver mContentResolver;
     private final MetricsLogger mMetricsLogger = Dependency.get(MetricsLogger.class);
 
@@ -145,6 +145,8 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
     private WindowManager mWindowManager;
     private CommandQueue mCommandQueue;
     private long mLastLockToAppLongPress;
+
+    private boolean mFullGestureMode;
 
     private Locale mLocale;
     private int mLayoutDirection;
@@ -171,6 +173,7 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
     private final OverviewProxyListener mOverviewProxyListener = new OverviewProxyListener() {
         @Override
         public void onConnectionChanged(boolean isConnected) {
+            setFullGestureMode(); // updateStates will update back icon visibility
             mNavigationBarView.updateStates();
             updateScreenPinningGestures();
         }
@@ -183,6 +186,7 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
 
         @Override
         public void onInteractionFlagsChanged(@InteractionType int flags) {
+            setFullGestureMode();
             mNavigationBarView.updateStates();
             updateScreenPinningGestures();
         }
@@ -190,6 +194,10 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
         @Override
         public void onBackButtonAlphaChanged(float alpha, boolean animate) {
             final ButtonDispatcher backButton = mNavigationBarView.getBackButton();
+            if (mFullGestureMode) {
+                backButton.setVisibility(View.INVISIBLE);
+                return;
+            }
             backButton.setVisibility(alpha > 0 ? View.VISIBLE : View.INVISIBLE);
             backButton.setAlpha(alpha, animate);
         }
@@ -210,11 +218,17 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
         Dependency.get(AccessibilityManagerWrapper.class).addCallback(
                 mAccessibilityListener);
         mContentResolver = getContext().getContentResolver();
-        mMagnificationObserver = new MagnificationContentObserver(
+        mSettingsObserver = new SettingsObserver(
                 getContext().getMainThreadHandler());
         mContentResolver.registerContentObserver(Settings.Secure.getUriFor(
                 Settings.Secure.ACCESSIBILITY_DISPLAY_MAGNIFICATION_NAVBAR_ENABLED), false,
-                mMagnificationObserver, UserHandle.USER_ALL);
+                mSettingsObserver, UserHandle.USER_ALL);
+        mContentResolver.registerContentObserver(Settings.System.getUriFor(
+                Settings.System.FULL_GESTURE_NAVBAR), false,
+                mSettingsObserver, UserHandle.USER_ALL);
+        mContentResolver.registerContentObserver(Settings.System.getUriFor(
+                Settings.System.FULL_GESTURE_NAVBAR_DT2S), false,
+                mSettingsObserver, UserHandle.USER_ALL);
 
         if (savedInstanceState != null) {
             mDisabledFlags1 = savedInstanceState.getInt(EXTRA_DISABLE_STATE, 0);
@@ -250,7 +264,7 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
         mCommandQueue.removeCallbacks(this);
         Dependency.get(AccessibilityManagerWrapper.class).removeCallback(
                 mAccessibilityListener);
-        mContentResolver.unregisterContentObserver(mMagnificationObserver);
+        mContentResolver.unregisterContentObserver(mSettingsObserver);
         try {
             WindowManagerGlobal.getWindowManagerService()
                     .removeRotationWatcher(mRotationWatcher);
@@ -273,8 +287,8 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
         super.onViewCreated(view, savedInstanceState);
         mNavigationBarView = (NavigationBarView) view;
 
-        mNavigationBarView.setDisabledFlags(mDisabledFlags1);
         mNavigationBarView.setComponents(mRecents, mDivider, mStatusBar.getPanel());
+        mNavigationBarView.setDisabledFlags(mDisabledFlags1);
         mNavigationBarView.setOnVerticalChangedListener(this::onVerticalChanged);
         mNavigationBarView.setOnTouchListener(this::onNavigationTouch);
         if (savedInstanceState != null) {
@@ -292,6 +306,8 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
         getContext().registerReceiverAsUser(mBroadcastReceiver, UserHandle.ALL, filter, null, null);
         notifyNavigationBarScreenOn();
         mOverviewProxyService.addCallback(mOverviewProxyListener);
+
+        setFullGestureMode();
     }
 
     @Override
@@ -1039,15 +1055,41 @@ public class NavigationBarFragment extends Fragment implements Callbacks {
     private final AccessibilityServicesStateChangeListener mAccessibilityListener =
             this::updateAccessibilityServicesState;
 
-    private class MagnificationContentObserver extends ContentObserver {
+    private class SettingsObserver extends ContentObserver {
 
-        public MagnificationContentObserver(Handler handler) {
+        public SettingsObserver(Handler handler) {
             super(handler);
         }
 
         @Override
         public void onChange(boolean selfChange) {
             NavigationBarFragment.this.updateAccessibilityServicesState(mAccessibilityManager);
+            NavigationBarFragment.this.setFullGestureMode();
+            if (mNavigationBarView != null) {
+                mNavigationBarView.updateNavButtonIcons();
+            }
+        }
+    }
+
+    private void setFullGestureMode() {
+        boolean fullModeEnabled = false;
+        boolean dt2sEnabled = false;
+        try {
+            if (Settings.System.getIntForUser(mContentResolver,
+                    Settings.System.FULL_GESTURE_NAVBAR,
+                    UserHandle.USER_CURRENT) == 1) {
+                fullModeEnabled = true;
+            }
+            if (Settings.System.getIntForUser(mContentResolver,
+                    Settings.System.FULL_GESTURE_NAVBAR_DT2S,
+                    UserHandle.USER_CURRENT) == 1) {
+                dt2sEnabled = fullModeEnabled;
+            }
+        } catch (Settings.SettingNotFoundException e) {
+        }
+        mFullGestureMode = mOverviewProxyService.shouldShowSwipeUpUI() && fullModeEnabled;
+        if (mNavigationBarView != null) {
+            mNavigationBarView.setFullGestureMode(mFullGestureMode, dt2sEnabled);
         }
     }
 

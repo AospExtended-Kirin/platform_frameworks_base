@@ -88,6 +88,7 @@ import com.android.systemui.util.NotificationChannels;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -152,9 +153,18 @@ class SaveImageInBackgroundTask extends AsyncTask<Void, Void, Void> {
             CharSequence appName = pm.getApplicationLabel(info.applicationInfo);
             boolean onKeyguard = context.getSystemService(KeyguardManager.class).isKeyguardLocked();
             if (appName != null && !onKeyguard) {
-                // replace all spaces and special chars with an underscore
-                String appNameString = appName.toString().replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
-                mImageFileName = String.format(SCREENSHOT_FILE_NAME_TEMPLATE_APPNAME, appNameString, imageDate);
+            // Replace all spaces and special chars with an underscore
+            String appNameString = appName.toString();
+            try {
+                // With some languages like Virgin Islands English, the Settings app gets a weird
+                // long name and some special voodoo chars, so we convert the string to utf-8 to get
+                // a  char instead, easy to remove it then
+                final String temp = new String(appNameString.getBytes("ISO-8859-15"), "UTF-8");
+                appNameString = temp.replaceAll("[]+", "");
+            } catch (UnsupportedEncodingException e) {}
+            // Now remove all special chars from the app name
+            appNameString = appNameString.replaceAll("[\\\\/:*?\"<>|\\s]+", "_");
+            mImageFileName = String.format(SCREENSHOT_FILE_NAME_TEMPLATE_APPNAME, imageDate, appNameString);
             }
         }
 
@@ -596,12 +606,15 @@ class GlobalScreenshot {
      */
     private void takeScreenshot(Runnable finisher, boolean statusBarVisible, boolean navBarVisible,
             Rect crop) {
+
+        mDisplay.getRealMetrics(mDisplayMetrics);
+        int displayHeight = mDisplayMetrics.heightPixels;
+        int displayWidth = mDisplayMetrics.widthPixels;
+        Rect displayRect = new Rect(0, 0, displayWidth, displayHeight);
         int rot = mDisplay.getRotation();
-        int width = crop.width();
-        int height = crop.height();
 
         // Take the screenshot
-        mScreenBitmap = SurfaceControl.screenshot(crop, width, height, rot);
+        mScreenBitmap = SurfaceControl.screenshot(displayRect, displayWidth, displayHeight, rot);
         if (mScreenBitmap == null) {
             notifyScreenshotError(mContext, mNotificationManager,
                     R.string.screenshot_failed_to_capture_text);
@@ -609,19 +622,29 @@ class GlobalScreenshot {
             return;
         }
 
+        if (crop != null) {
+            // Crop the screenshot to selected region
+            Bitmap swBitmap = mScreenBitmap.copy(Bitmap.Config.ARGB_8888, true);
+            Bitmap cropped = Bitmap.createBitmap(swBitmap, Math.max(0, crop.left), Math.max(0, crop.top),
+                    crop.width(), crop.height());
+            swBitmap.recycle();
+            mScreenBitmap.recycle();
+            mScreenBitmap = cropped;
+        }
+
         // Optimizations
         mScreenBitmap.setHasAlpha(false);
         mScreenBitmap.prepareToDraw();
 
         // Start the post-screenshot animation
-        startAnimation(finisher, mDisplayMetrics.widthPixels, mDisplayMetrics.heightPixels,
+        startAnimation(finisher, displayWidth, displayHeight,
                 statusBarVisible, navBarVisible);
     }
 
     void takeScreenshot(Runnable finisher, boolean statusBarVisible, boolean navBarVisible) {
         mDisplay.getRealMetrics(mDisplayMetrics);
         takeScreenshot(finisher, statusBarVisible, navBarVisible,
-                new Rect(0, 0, mDisplayMetrics.widthPixels, mDisplayMetrics.heightPixels));
+                null);
     }
 
     /**
@@ -645,16 +668,14 @@ class GlobalScreenshot {
                         view.setVisibility(View.GONE);
                         mWindowManager.removeView(mScreenshotLayout);
                         final Rect rect = view.getSelectionRect();
-                        if (rect != null) {
-                            if (rect.width() != 0 && rect.height() != 0) {
-                                // Need mScreenshotLayout to handle it after the view disappears
-                                mScreenshotLayout.post(new Runnable() {
-                                    public void run() {
-                                        takeScreenshot(finisher, statusBarVisible, navBarVisible,
-                                                rect);
-                                    }
-                                });
-                            }
+                        if (rect != null && !rect.isEmpty()) {
+                            // Need mScreenshotLayout to handle it after the view disappears
+                            mScreenshotLayout.post(new Runnable() {
+                                public void run() {
+                                    takeScreenshot(finisher, statusBarVisible, navBarVisible,
+                                            rect);
+                                }
+                            });
                         }
 
                         view.stopSelection();
@@ -884,8 +905,8 @@ class GlobalScreenshot {
 
         // Repurpose the existing notification to notify the user of the error
         Notification.Builder b = new Notification.Builder(context, NotificationChannels.ALERTS)
-            .setTicker(r.getString(R.string.screenshot_failed_title))
-            .setContentTitle(r.getString(R.string.screenshot_failed_title))
+            .setTicker(r.getString(R.string.screenshot_abort_title))
+            .setContentTitle(r.getString(R.string.screenshot_abort_title))
             .setContentText(errorMsg)
             .setSmallIcon(R.drawable.stat_notify_image_error)
             .setWhen(System.currentTimeMillis())

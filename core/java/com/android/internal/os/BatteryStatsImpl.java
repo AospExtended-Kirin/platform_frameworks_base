@@ -4021,7 +4021,9 @@ public class BatteryStatsImpl extends BatteryStats {
         try {
             IBatteryPropertiesRegistrar registrar = IBatteryPropertiesRegistrar.Stub.asInterface(
                     ServiceManager.getService("batteryproperties"));
-            registrar.scheduleUpdate();
+            if (registrar != null) {
+                registrar.scheduleUpdate();
+            }
         } catch (RemoteException e) {
             // Ignore.
         }
@@ -12372,7 +12374,7 @@ public class BatteryStatsImpl extends BatteryStats {
             // level to a now very high level).
             boolean reset = false;
             if (!mNoAutoReset && (oldStatus == BatteryManager.BATTERY_STATUS_FULL
-                    || level >= 99
+                    || level >= 90
                     || (mDischargeCurrentLevel < 20 && level >= 80)
                     || (getHighDischargeAmountSinceCharge() >= 200
                             && mHistoryBuffer.dataSize() >= MAX_HISTORY_BUFFER))) {

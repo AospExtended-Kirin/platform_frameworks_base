@@ -955,12 +955,18 @@ public class LockSettingsService extends ILockSettings.Stub {
     @GuardedBy("mSeparateChallengeLock")
     private void setSeparateProfileChallengeEnabledLocked(@UserIdInt int userId, boolean enabled,
             String managedUserPassword) {
+        final boolean old = getBoolean(SEPARATE_PROFILE_CHALLENGE_KEY, false, userId);
         setBoolean(SEPARATE_PROFILE_CHALLENGE_KEY, enabled, userId);
-        if (enabled) {
-            mStorage.removeChildProfileLock(userId);
-            removeKeystoreProfileKey(userId);
-        } else {
-            tieManagedProfileLockIfNecessary(userId, managedUserPassword);
+        try {
+            if (enabled) {
+                mStorage.removeChildProfileLock(userId);
+                removeKeystoreProfileKey(userId);
+            } else {
+                tieManagedProfileLockIfNecessary(userId, managedUserPassword);
+            }
+        } catch (IllegalStateException e) {
+            setBoolean(SEPARATE_PROFILE_CHALLENGE_KEY, old, userId);
+            throw e;
         }
     }
 
@@ -1290,6 +1296,10 @@ public class LockSettingsService extends ILockSettings.Stub {
     private boolean isManagedProfileWithSeparatedLock(int userId) {
         return mUserManager.getUserInfo(userId).isManagedProfile()
                 && mLockPatternUtils.isSeparateProfileChallengeEnabled(userId);
+    }
+
+    public byte getLockPatternSize(int userId) {
+        return mStorage.getLockPatternSize(userId);
     }
 
     // This method should be called by LockPatternUtil only, all internal methods in this class
@@ -1740,7 +1750,10 @@ public class LockSettingsService extends ILockSettings.Stub {
         if (storedHash.version == CredentialHash.VERSION_LEGACY) {
             final byte[] hash;
             if (storedHash.type == LockPatternUtils.CREDENTIAL_TYPE_PATTERN) {
-                hash = LockPatternUtils.patternToHash(LockPatternUtils.stringToPattern(credential));
+                final byte lockPatternSize = getLockPatternSize(userId);
+                hash = LockPatternUtils.patternToHash(
+                        LockPatternUtils.stringToPattern(credential, lockPatternSize),
+                        lockPatternSize);
             } else {
                 hash = mLockPatternUtils.legacyPasswordToHash(credential, userId)
                         .getBytes(StandardCharsets.UTF_8);
@@ -2119,7 +2132,11 @@ public class LockSettingsService extends ILockSettings.Stub {
             Secure.LOCK_PATTERN_ENABLED,
             Secure.LOCK_BIOMETRIC_WEAK_FLAGS,
             Secure.LOCK_PATTERN_VISIBLE,
-            Secure.LOCK_PATTERN_TACTILE_FEEDBACK_ENABLED
+            Secure.LOCK_PATTERN_TACTILE_FEEDBACK_ENABLED,
+            Secure.LOCK_PATTERN_SIZE,
+            Secure.LOCK_DOTS_VISIBLE,
+            Secure.LOCK_SHOW_ERROR_PATH,
+            Secure.LOCK_PASS_TO_SECURITY_VIEW
     };
 
     // Reading these settings needs the contacts permission

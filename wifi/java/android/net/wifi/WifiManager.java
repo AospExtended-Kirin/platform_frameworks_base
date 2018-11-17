@@ -1680,6 +1680,7 @@ public class WifiManager {
      * returned.
      */
     public List<ScanResult> getScanResults() {
+        android.util.SeempLog.record(55);
         try {
             return mService.getScanResults(mContext.getOpPackageName());
         } catch (RemoteException e) {
@@ -2164,6 +2165,21 @@ public class WifiManager {
     public boolean setWifiApConfiguration(WifiConfiguration wifiConfig) {
         try {
             return mService.setWifiApConfiguration(wifiConfig, mContext.getOpPackageName());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Method that triggers a notification to the user about a conversion to their saved AP config.
+     *
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.NETWORK_SETTINGS)
+    public void notifyUserOfApBandConversion() {
+        Log.d(TAG, "apBand was converted, notify the user");
+        try {
+            mService.notifyUserOfApBandConversion(mContext.getOpPackageName());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

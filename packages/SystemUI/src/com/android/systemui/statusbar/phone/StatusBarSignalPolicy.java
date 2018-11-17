@@ -16,12 +16,14 @@
 
 package com.android.systemui.statusbar.phone;
 
+import android.app.ActivityThread;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.Rect;
 import android.os.Handler;
 import android.os.Looper;
 import android.telephony.SubscriptionInfo;
+import android.telephony.SubscriptionManager;
 import android.util.ArraySet;
 import android.util.Log;
 import android.view.LayoutInflater;
@@ -38,14 +40,17 @@ import com.android.systemui.statusbar.policy.NetworkController;
 import com.android.systemui.statusbar.policy.NetworkController.IconState;
 import com.android.systemui.statusbar.policy.NetworkControllerImpl;
 import com.android.systemui.statusbar.policy.SecurityController;
+import com.android.systemui.tuner.TunerService;
 import com.android.systemui.tuner.TunerService.Tunable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
+import com.android.internal.telephony.util.TelephonyExtUtils;
+import com.android.internal.telephony.util.TelephonyExtUtils.ProvisioningChangedListener;
 
 public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallback,
-        SecurityController.SecurityControllerCallback, Tunable {
+        SecurityController.SecurityControllerCallback, Tunable, ProvisioningChangedListener {
     private static final String TAG = "StatusBarSignalPolicy";
 
     private final String mSlotAirplane;
@@ -66,6 +71,7 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
     private boolean mBlockEthernet;
     private boolean mActivityEnabled;
     private boolean mForceBlockWifi;
+    private boolean mBlockVpn;
 
     // Track as little state as possible, and only for padding purposes
     private boolean mIsAirplaneMode = false;
@@ -90,15 +96,37 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
 
         mNetworkController.addCallback(this);
         mSecurityController.addCallback(this);
+
+        Dependency.get(TunerService.class).addTunable(this, StatusBarIconController.ICON_BLACKLIST);
+
+        TelephonyExtUtils.getInstance(context).addListener(this);
+    }
+
+    @Override
+    public void onProvisioningChanged(int slotId, boolean isProvisioned) {
+        int[] subId = SubscriptionManager.getSubId(slotId);
+        if (subId != null) {
+            MobileIconState state = getState(subId[0]);
+            if (state != null) {
+                state.mProvisioned = isProvisioned;
+                if (!isProvisioned) {
+                    state.visible = false;
+                }
+            }
+
+            mNetworkController.removeCallback(this);
+            mNetworkController.addCallback(this);
+        }
     }
 
     public void destroy() {
         mNetworkController.removeCallback(this);
         mSecurityController.removeCallback(this);
+        Dependency.get(TunerService.class).removeTunable(this);
     }
 
     private void updateVpn() {
-        boolean vpnVisible = mSecurityController.isVpnEnabled();
+        boolean vpnVisible = mSecurityController.isVpnEnabled() && !mBlockVpn;
         int vpnIconId = currentVpnIconId(mSecurityController.isVpnBranded());
 
         mIconController.setIcon(mSlotVpn, vpnIconId, null);
@@ -127,15 +155,20 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
         boolean blockMobile = blockList.contains(mSlotMobile);
         boolean blockWifi = blockList.contains(mSlotWifi);
         boolean blockEthernet = blockList.contains(mSlotEthernet);
+        boolean blockVpn = blockList.contains(mSlotVpn);
 
         if (blockAirplane != mBlockAirplane || blockMobile != mBlockMobile
-                || blockEthernet != mBlockEthernet || blockWifi != mBlockWifi) {
+                || blockEthernet != mBlockEthernet || blockWifi != mBlockWifi
+                || blockVpn != mBlockVpn) {
             mBlockAirplane = blockAirplane;
             mBlockMobile = blockMobile;
             mBlockEthernet = blockEthernet;
             mBlockWifi = blockWifi || mForceBlockWifi;
+            mBlockVpn = blockVpn;
             // Re-register to get new callbacks.
             mNetworkController.removeCallback(this);
+            mNetworkController.addCallback(this);
+            updateVpn();
         }
     }
 
@@ -181,7 +214,7 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
 
     @Override
     public void setMobileDataIndicators(IconState statusIcon, IconState qsIcon, int statusType,
-            int qsType, boolean activityIn, boolean activityOut, String typeContentDescription,
+            int qsType, boolean activityIn, boolean activityOut, int volteId, String typeContentDescription,
             String description, boolean isWide, int subId, boolean roaming) {
         MobileIconState state = getState(subId);
         if (state == null) {
@@ -191,7 +224,7 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
         // Visibility of the data type indicator changed
         boolean typeChanged = statusType != state.typeId && (statusType == 0 || state.typeId == 0);
 
-        state.visible = statusIcon.visible && !mBlockMobile;
+        state.visible = statusIcon.visible && !mBlockMobile && state.mProvisioned;
         state.strengthId = statusIcon.icon;
         state.typeId = statusType;
         state.contentDescription = statusIcon.contentDescription;
@@ -199,8 +232,9 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
         state.roaming = roaming;
         state.activityIn = activityIn && mActivityEnabled;
         state.activityOut = activityOut && mActivityEnabled;
+        state.volteId = volteId;
 
-        // Always send a copy to maintain value type semantics
+      // Always send a copy to maintain value type semantics
         mIconController.setMobileIcons(mSlotMobile, MobileIconState.copyStates(mMobileStates));
 
         if (typeChanged) {
@@ -247,7 +281,7 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
         mMobileStates.clear();
         final int n = subs.size();
         for (int i = 0; i < n; i++) {
-            mMobileStates.add(new MobileIconState(subs.get(i).getSubscriptionId()));
+            mMobileStates.add(new MobileIconState(subs.get(i).getSubscriptionId(), mContext));
         }
     }
 
@@ -392,10 +426,18 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
         public boolean roaming;
         public boolean needsLeadingPadding;
         public String typeContentDescription;
+        public int volteId;
+        private boolean mProvisioned = true;
+        public Context mContext;
 
-        private MobileIconState(int subId) {
+        private MobileIconState(int subId, Context context) {
             super();
             this.subId = subId;
+            this.mContext = context;
+            TelephonyExtUtils extTelephony = TelephonyExtUtils.getInstance(context);
+            if (extTelephony.hasService()) {
+                mProvisioned = extTelephony.isSubProvisioned(subId);
+            }
         }
 
         @Override
@@ -412,7 +454,8 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
                     typeId == that.typeId &&
                     roaming == that.roaming &&
                     needsLeadingPadding == that.needsLeadingPadding &&
-                    Objects.equals(typeContentDescription, that.typeContentDescription);
+                    Objects.equals(typeContentDescription, that.typeContentDescription) &&
+                    volteId == that.volteId;
         }
 
         @Override
@@ -420,11 +463,11 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
 
             return Objects
                     .hash(super.hashCode(), subId, strengthId, typeId, roaming, needsLeadingPadding,
-                            typeContentDescription);
+                            typeContentDescription, mContext);
         }
 
         public MobileIconState copy() {
-            MobileIconState copy = new MobileIconState(this.subId);
+            MobileIconState copy = new MobileIconState(this.subId, this.mContext);
             copyTo(copy);
             return copy;
         }
@@ -437,12 +480,14 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
             other.roaming = roaming;
             other.needsLeadingPadding = needsLeadingPadding;
             other.typeContentDescription = typeContentDescription;
+            other.volteId = volteId;
+            other.mContext = mContext;
         }
 
         private static List<MobileIconState> copyStates(List<MobileIconState> inStates) {
             ArrayList<MobileIconState> outStates = new ArrayList<>();
             for (MobileIconState state : inStates) {
-                MobileIconState copy = new MobileIconState(state.subId);
+                MobileIconState copy = new MobileIconState(state.subId, state.mContext);
                 state.copyTo(copy);
                 outStates.add(copy);
             }
@@ -452,7 +497,8 @@ public class StatusBarSignalPolicy implements NetworkControllerImpl.SignalCallba
 
         @Override public String toString() {
             return "MobileIconState(subId=" + subId + ", strengthId=" + strengthId + ", roaming="
-                    + roaming + ", typeId=" + typeId + ", visible=" + visible + ")";
+                    + roaming + ", typeId=" + typeId + ", volteId=" + volteId
+                    + ", visible=" + visible + ")";
         }
     }
 }

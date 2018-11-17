@@ -76,6 +76,7 @@ import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_IS_ROUNDED_CO
 import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_IS_SCREEN_DECOR;
 import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_KEYGUARD;
 import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_SHOW_FOR_ALL_USERS;
+import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_STATUS_BAR_EXPANDED;
 import static android.view.WindowManager.LayoutParams.PRIVATE_FLAG_SYSTEM_ERROR;
 import static android.view.WindowManager.LayoutParams.ROTATION_ANIMATION_CROSSFADE;
 import static android.view.WindowManager.LayoutParams.ROTATION_ANIMATION_JUMPCUT;
@@ -276,6 +277,7 @@ import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto;
 import com.android.internal.util.aospextended.AEXUtils;
 import com.android.internal.os.DeviceKeyHandler;
+import com.android.internal.os.AlternativeDeviceKeyHandler;
 import com.android.internal.policy.IKeyguardDismissCallback;
 import com.android.internal.policy.IShortcutService;
 import com.android.internal.policy.KeyguardDismissCallback;
@@ -855,6 +857,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
 
     private boolean mAodShowing;
     private final List<DeviceKeyHandler> mDeviceKeyHandlers = new ArrayList<>();
+    private AlternativeDeviceKeyHandler mAlternativeDeviceKeyHandler;
 
     private static final int MSG_ENABLE_POINTER_LOCATION = 1;
     private static final int MSG_DISABLE_POINTER_LOCATION = 2;
@@ -2449,6 +2452,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
         final String[] deviceKeyHandlerClasses = res.getStringArray(
                 com.android.internal.R.array.config_deviceKeyHandlerClasses);
 
+        boolean defaultKeyHandlerLoaded = false;
         for (int i = 0;
                 i < deviceKeyHandlerLibs.length && i < deviceKeyHandlerClasses.length; i++) {
             try {
@@ -2457,6 +2461,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                 Class<?> klass = loader.loadClass(deviceKeyHandlerClasses[i]);
                 Constructor<?> constructor = klass.getConstructor(Context.class);
                 mDeviceKeyHandlers.add((DeviceKeyHandler) constructor.newInstance(mContext));
+                defaultKeyHandlerLoaded = true;
             } catch (Exception e) {
                 Slog.w(TAG, "Could not instantiate device key handler "
                         + deviceKeyHandlerLibs[i] + " from class "
@@ -2464,6 +2469,32 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             }
         }
         if (DEBUG) Slog.d(TAG, "" + mDeviceKeyHandlers.size() + " device key handlers loaded");
+
+        if (!defaultKeyHandlerLoaded){
+            String alternativeDeviceKeyHandlerLib = res.getString(
+                    com.android.internal.R.string.config_alternativeDeviceKeyHandlerLib);
+
+            String alternativeDeviceKeyHandlerClass = res.getString(
+                    com.android.internal.R.string.config_alternativeDeviceKeyHandlerClass);
+
+            if (!alternativeDeviceKeyHandlerLib.isEmpty() && !alternativeDeviceKeyHandlerClass.isEmpty()) {
+                try {
+                    PathClassLoader loader =  new PathClassLoader(alternativeDeviceKeyHandlerLib,
+                            getClass().getClassLoader());
+
+                    Class<?> klass = loader.loadClass(alternativeDeviceKeyHandlerClass);
+                    Constructor<?> constructor = klass.getConstructor(Context.class);
+                    mAlternativeDeviceKeyHandler = (AlternativeDeviceKeyHandler) constructor.newInstance(
+                            mContext);
+                    if(DEBUG) Slog.d(TAG, "Alternative Device key handler loaded");
+                } catch (Exception e) {
+                    Slog.w(TAG, "Could not instantiate alternative device key handler "
+                            + alternativeDeviceKeyHandlerClass + " from class "
+                            + alternativeDeviceKeyHandlerLib, e);
+                }
+            }
+        }
+
 
         // Register for torch off events
         BroadcastReceiver torchReceiver = new BroadcastReceiver() {
@@ -4250,6 +4281,18 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             return -1;
         }
 
+        // Alternative specific device key handling
+        if (mAlternativeDeviceKeyHandler != null) {
+            try {
+                // The device only will consume known keys.
+                if (mAlternativeDeviceKeyHandler.canHandleKeyEvent(event)) {
+                    return -1;
+                }
+            } catch (Exception e) {
+                Slog.w(TAG, "Could not dispatch event to alternative device key handler", e);
+            }
+        }
+
         if (down) {
             long shortcutCode = keyCode;
             if (event.isCtrlPressed()) {
@@ -4634,17 +4677,9 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             if (isKeyguardShowingAndNotOccluded()) {
                 // don't launch home if keyguard showing
                 return;
-            } else if (mKeyguardOccluded && mKeyguardDelegate.isShowing()) {
-                mKeyguardDelegate.dismiss(new KeyguardDismissCallback() {
-                    @Override
-                    public void onDismissSucceeded() throws RemoteException {
-                        mHandler.post(() -> {
-                            startDockOrHome(true /*fromHomeKey*/, awakenFromDreams);
-                        });
-                    }
-                }, null /* message */);
-                return;
-            } else if (!mKeyguardOccluded && mKeyguardDelegate.isInputRestricted()) {
+            }
+
+            if (!mKeyguardOccluded && mKeyguardDelegate.isInputRestricted()) {
                 // when in keyguard restricted mode, must first verify unlock
                 // before launching home
                 mKeyguardDelegate.verifyUnlock(new OnKeyguardExitResult() {
@@ -4929,8 +4964,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                 navTranslucent &= areTranslucentBarsAllowed();
             }
             boolean statusBarExpandedNotKeyguard = !isKeyguardShowing && mStatusBar != null
-                    && mStatusBar.getAttrs().height == MATCH_PARENT
-                    && mStatusBar.getAttrs().width == MATCH_PARENT;
+                    && (mStatusBar.getAttrs().privateFlags & PRIVATE_FLAG_STATUS_BAR_EXPANDED) != 0;
 
             // When the navigation bar isn't visible, we put up a fake input window to catch all
             // touch events. This way we can detect when the user presses anywhere to bring back the
@@ -5933,7 +5967,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
         }
 
         // Take note if a window wants to acquire a sleep token.
-        if (win.isVisibleLw() && (attrs.privateFlags & PRIVATE_FLAG_ACQUIRES_SLEEP_TOKEN) != 0
+        if ((attrs.privateFlags & PRIVATE_FLAG_ACQUIRES_SLEEP_TOKEN) != 0
                 && win.canAcquireSleepToken()) {
             mWindowSleepTokenNeeded = true;
         }
@@ -5989,9 +6023,8 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                 mStatusBarController.setShowTransparent(true /* transparent */);
             }
 
-            WindowManager.LayoutParams statusBarAttrs = mStatusBar.getAttrs();
-            boolean statusBarExpanded = statusBarAttrs.height == MATCH_PARENT
-                    && statusBarAttrs.width == MATCH_PARENT;
+            boolean statusBarExpanded =
+                    (mStatusBar.getAttrs().privateFlags & PRIVATE_FLAG_STATUS_BAR_EXPANDED) != 0;
             boolean topAppHidesStatusBar = topAppHidesStatusBar();
             if (mForceStatusBar || mForceStatusBarFromKeyguard || mForceStatusBarTransparent
                     || statusBarExpanded) {
@@ -6250,6 +6283,12 @@ public class PhoneWindowManager implements WindowManagerPolicy {
         setHdmiPlugged(!mHdmiPlugged);
     }
 
+    void launchKeyguardDismissIntent(Context context, UserHandle user, Intent launchIntent) {
+        Intent keyguardIntent = new Intent("com.android.systemui.ACTION_DISMISS_KEYGUARD");
+        keyguardIntent.setPackage("com.android.systemui");
+        keyguardIntent.putExtra("launch", launchIntent);
+        context.sendBroadcastAsUser(keyguardIntent, user);
+    }
 
     private boolean isHwKeysDisabled() {
         return mKeyHandler != null ? mKeyHandler.isHwKeysDisabled() : false;
@@ -6360,6 +6399,53 @@ public class PhoneWindowManager implements WindowManagerPolicy {
         // Specific device key handling
         if (dispatchKeyToKeyHandlers(event)) {
             return 0;
+        }
+
+        // Alternative specific device key handling
+        if (mAlternativeDeviceKeyHandler != null) {
+            try {
+                // The device says if we should ignore this event.
+                if (mAlternativeDeviceKeyHandler.isDisabledKeyEvent(event)) {
+                    result &= ~ACTION_PASS_TO_USER;
+                    return result;
+                }
+                if (mAlternativeDeviceKeyHandler.isCameraLaunchEvent(event)) {
+                    if (DEBUG_INPUT) {
+                        Slog.i(TAG, "isCameraLaunchEvent from AlternativeDeviceKeyHandler");
+                    }
+                    GestureLauncherService gestureService = LocalServices.getService(
+                            GestureLauncherService.class);
+                    if (gestureService != null) {
+                        gestureService.doCameraLaunchGesture();
+                    }
+                    result &= ~ACTION_PASS_TO_USER;
+                    return result;
+                }
+                if (!interactive && mAlternativeDeviceKeyHandler.isWakeEvent(event)) {
+                    if (DEBUG_INPUT) {
+                        Slog.i(TAG, "isWakeEvent from AlternativeDeviceKeyHandler");
+                    }
+                    wakeUp(event.getEventTime(), mAllowTheaterModeWakeFromKey, "android.policy:KEY");
+                    result &= ~ACTION_PASS_TO_USER;
+                    return result;
+                }
+                final Intent eventLaunchActivity = mAlternativeDeviceKeyHandler.isActivityLaunchEvent(event);
+                if (!interactive && eventLaunchActivity != null) {
+                    if (DEBUG_INPUT) {
+                        Slog.i(TAG, "isActivityLaunchEvent from AlternativeDeviceKeyHandler " + eventLaunchActivity);
+                    }
+                    wakeUp(event.getEventTime(), mAllowTheaterModeWakeFromKey, "android.policy:KEY");
+                    launchKeyguardDismissIntent(mContext, UserHandle.CURRENT, eventLaunchActivity);
+                    result &= ~ACTION_PASS_TO_USER;
+                    return result;
+                }
+                if (mAlternativeDeviceKeyHandler.handleKeyEvent(event)) {
+                    result &= ~ACTION_PASS_TO_USER;
+                    return result;
+                }
+            } catch (Exception e) {
+                Slog.w(TAG, "Could not dispatch event to device key handler", e);
+            }
         }
 
         // Handle special keys.
@@ -6575,6 +6661,12 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             }
 
             case KeyEvent.KEYCODE_POWER: {
+                if (mTopFullscreenOpaqueWindowState != null
+                        && (mTopFullscreenOpaqueWindowState.getAttrs().privateFlags
+                                & WindowManager.LayoutParams.PRIVATE_FLAG_PREVENT_POWER_KEY) != 0
+                        && mScreenOnFully) {
+                    return result;
+                }
                 // Any activity on the power button stops the accessibility shortcut
                 cancelPendingAccessibilityShortcutAction();
                 result &= ~ACTION_PASS_TO_USER;
@@ -7593,7 +7685,7 @@ public class PhoneWindowManager implements WindowManagerPolicy {
 
         synchronized (mLock) {
             int sensorRotation = mOrientationListener.getProposedRotation(); // may be -1
-            if (sensorRotation < 0) {
+            if (sensorRotation < 0 || sensorRotation > 3) {
                 sensorRotation = lastRotation;
             }
 

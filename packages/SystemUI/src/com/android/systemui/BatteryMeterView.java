@@ -85,6 +85,8 @@ public class BatteryMeterView extends LinearLayout implements
 
     private int mStyle = BatteryMeterDrawableBase.BATTERY_STYLE_PORTRAIT;
     private boolean mQsHeaderOrKeyguard;
+    private boolean mCharging;
+    private boolean mPowerSave;
 
     /**
      * Whether we should use colors that adapt based on wallpaper/the scrim behind quick settings.
@@ -93,7 +95,6 @@ public class BatteryMeterView extends LinearLayout implements
 
     private int mNonAdaptedForegroundColor;
     private int mNonAdaptedBackgroundColor;
-    private boolean isBatteryPercentHidden;
 
     public BatteryMeterView(Context context) {
         this(context, null, 0);
@@ -122,9 +123,6 @@ public class BatteryMeterView extends LinearLayout implements
 
         addOnAttachStateChangeListener(
                 new DisableStateTracker(DISABLE_NONE, DISABLE2_SYSTEM_ICONS));
-
-        isBatteryPercentHidden = Settings.System.getIntForUser(
-                getContext().getContentResolver(), SHOW_BATTERY_PERCENT, 0, mUser) == 0;
 
         mBatteryIconView = new ImageView(context);
         mBatteryIconView.setImageDrawable(mDrawable);
@@ -237,10 +235,10 @@ public class BatteryMeterView extends LinearLayout implements
     @Override
     public void onBatteryLevelChanged(int level, boolean pluggedIn, boolean charging) {
 
-        if (isCircleBattery()  || mStyle == BatteryMeterDrawableBase.BATTERY_STYLE_PORTRAIT) {
-            setForceShowPercent(pluggedIn && !isBatteryPercentHidden);
+        if (mCharging != pluggedIn) {
+            mCharging = pluggedIn;
+            updateShowPercent();
         }
-
         mDrawable.setBatteryLevel(level);
         mDrawable.setCharging(pluggedIn);
         mLevel = level;
@@ -258,6 +256,10 @@ public class BatteryMeterView extends LinearLayout implements
     @Override
     public void onPowerSaveChanged(boolean isPowerSave) {
         mDrawable.setPowerSave(isPowerSave);
+        if (mPowerSave != isPowerSave) {
+            mPowerSave = isPowerSave;
+            updateShowPercent();
+        }
     }
 
     private TextView loadPercentView() {
@@ -277,7 +279,8 @@ public class BatteryMeterView extends LinearLayout implements
     }
 
     private boolean forcePercentageQsHeader() {
-        return mQsHeaderOrKeyguard && (mStyle == BatteryMeterDrawableBase.BATTERY_STYLE_PORTRAIT
+        return (mQsHeaderOrKeyguard || mCharging || mPowerSave)
+                && (mStyle == BatteryMeterDrawableBase.BATTERY_STYLE_PORTRAIT
                 || mStyle == BatteryMeterDrawableBase.BATTERY_STYLE_HIDDEN
                 || mStyle == BatteryMeterDrawableBase.BATTERY_STYLE_TEXT
                 || isCircleBattery());
@@ -290,8 +293,6 @@ public class BatteryMeterView extends LinearLayout implements
                 getContext().getContentResolver(), STATUS_BAR_BATTERY_STYLE, 0, mUser) == 3;
         final boolean showingInside = Settings.System.getIntForUser(
                 getContext().getContentResolver(), SHOW_BATTERY_PERCENT, 0, mUser) == 2;
-        isBatteryPercentHidden = Settings.System.getIntForUser(
-                getContext().getContentResolver(), SHOW_BATTERY_PERCENT, 0, mUser) == 0;
         final boolean showingOutside = mBatteryPercentView != null;
         if (0 != Settings.System.getIntForUser(getContext().getContentResolver(),
                 SHOW_BATTERY_PERCENT, 0, mUser) || mForceShowPercent || showingText || hideText || forcePercentageQsHeader()) {
@@ -417,6 +418,10 @@ public class BatteryMeterView extends LinearLayout implements
                 }
                 break;
             default:
+                if (mBatteryPercentView != null) {
+                    removeView(mBatteryPercentView);
+                    mBatteryPercentView = null;
+                }
                 mDrawable.setMeterStyle(style);
                 if (mBatteryIconView == null) {
                     mBatteryIconView = new ImageView(mContext);
@@ -433,11 +438,6 @@ public class BatteryMeterView extends LinearLayout implements
                 break;
         }
 
-        if (forcePercentageQsHeader() || style == BatteryMeterDrawableBase.BATTERY_STYLE_TEXT) {
-            mForceShowPercent = true;
-        } else {
-            mForceShowPercent = false;
-        }
         updateShowPercent();
         onDensityOrFontScaleChanged();
     }

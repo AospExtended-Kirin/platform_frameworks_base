@@ -128,6 +128,11 @@ public final class NotificationRecord {
     // The most recent update time, or the creation time if no updates.
     private long mUpdateTimeMs;
 
+    // The most recent interruption time, or the creation time if no updates. Differs from the
+    // above value because updates are filtered based on whether they actually interrupted the
+    // user
+    private long mInterruptionTimeMs;
+
     // Is this record an update of an old record?
     public boolean isUpdate;
     private int mPackagePriority;
@@ -152,6 +157,7 @@ public final class NotificationRecord {
     private boolean mShowBadge;
     private LogMaker mLogMaker;
     private Light mLight;
+    private boolean mLightOnZen;
     private String mGroupLogTag;
     private String mChannelIdLogTag;
 
@@ -180,6 +186,7 @@ public final class NotificationRecord {
         mRankingTimeMs = calculateRankingTimeMs(0L);
         mCreationTimeMs = sbn.getPostTime();
         mUpdateTimeMs = mCreationTimeMs;
+        mInterruptionTimeMs = mCreationTimeMs;
         mContext = context;
         stats = new NotificationUsageStats.SingleNotificationStats();
         mChannel = channel;
@@ -189,6 +196,7 @@ public final class NotificationRecord {
         mAttributes = calculateAttributes();
         mImportance = calculateImportance();
         mLight = calculateLights();
+        mLightOnZen = calculateLightOnZen();
         mAdjustments = new ArrayList<>();
         mStats = new NotificationStats();
         calculateUserSentiment();
@@ -233,27 +241,40 @@ public final class NotificationRecord {
                 com.android.internal.R.integer.config_defaultNotificationLedOn);
         int defaultLightOff = mContext.getResources().getInteger(
                 com.android.internal.R.integer.config_defaultNotificationLedOff);
-
-        int channelLightColor = getChannel().getLightColor() != 0 ? getChannel().getLightColor()
+        int userSetLightColor = getChannel().getLightColor();
+        int userSetLightOnTime = getChannel().getLightOnTime();
+        int userSetLightOffTime = getChannel().getLightOffTime();
+        int channelLightColor = userSetLightColor != 0 ? userSetLightColor
                 : defaultLightColor;
+        int channelLightOnTime = userSetLightOnTime != 0 ? userSetLightOnTime
+                : defaultLightOn;
+        int channelLightOffTime = userSetLightOffTime != 0 ? userSetLightOffTime
+                : defaultLightOff;
         Light light = getChannel().shouldShowLights() ? new Light(channelLightColor,
-                defaultLightOn, defaultLightOff) : null;
+                channelLightOnTime, channelLightOffTime) : null;
+
         if (mPreChannelsNotification
                 && (getChannel().getUserLockedFields()
                 & NotificationChannel.USER_LOCKED_LIGHTS) == 0) {
             final Notification notification = sbn.getNotification();
             if ((notification.flags & Notification.FLAG_SHOW_LIGHTS) != 0) {
-                light = new Light(notification.ledARGB, notification.ledOnMS,
-                        notification.ledOffMS);
+                light = new Light(userSetLightColor != 0 ? userSetLightColor : notification.ledARGB,
+                        userSetLightOnTime != 0 ? userSetLightOnTime : notification.ledOnMS,
+                        userSetLightOffTime != 0 ? userSetLightOffTime : notification.ledOffMS);
                 if ((notification.defaults & Notification.DEFAULT_LIGHTS) != 0) {
-                    light = new Light(defaultLightColor, defaultLightOn,
-                            defaultLightOff);
+                    light = new Light(userSetLightColor != 0 ? userSetLightColor : defaultLightColor,
+                        userSetLightOnTime != 0 ? userSetLightOnTime : defaultLightOn,
+                        userSetLightOffTime != 0 ? userSetLightOffTime : defaultLightOff);
                 }
             } else {
                 light = null;
             }
         }
         return light;
+    }
+
+    private boolean calculateLightOnZen() {
+        return getChannel().shouldLightOnZen();
     }
 
     private long[] calculateVibration() {
@@ -525,6 +546,7 @@ public final class NotificationRecord {
         pw.println(prefix + "mCreationTimeMs=" + mCreationTimeMs);
         pw.println(prefix + "mVisibleSinceMs=" + mVisibleSinceMs);
         pw.println(prefix + "mUpdateTimeMs=" + mUpdateTimeMs);
+        pw.println(prefix + "mInterruptionTimeMs=" + mInterruptionTimeMs);
         pw.println(prefix + "mSuppressedVisualEffects= " + mSuppressedVisualEffects);
         if (mPreChannelsNotification) {
             pw.println(prefix + String.format("defaults=0x%08x flags=0x%08x",
@@ -786,6 +808,10 @@ public final class NotificationRecord {
         return mVisibleSinceMs == 0 ? 0 : (int) (now - mVisibleSinceMs);
     }
 
+    public int getInterruptionMs(long now) {
+        return (int) (now - mInterruptionTimeMs);
+    }
+
     /**
      * Set the visibility of the notification.
      */
@@ -844,7 +870,7 @@ public final class NotificationRecord {
     public void setSeen() {
         mStats.setSeen();
         if (mTextChanged) {
-            mIsInterruptive = true;
+            setInterruptive(true);
         }
     }
 
@@ -922,6 +948,10 @@ public final class NotificationRecord {
         return mLight;
     }
 
+    public boolean shouldLightOnZen() {
+        return mLightOnZen;
+    }
+
     public Uri getSound() {
         return mSound;
     }
@@ -940,6 +970,17 @@ public final class NotificationRecord {
 
     public void setInterruptive(boolean interruptive) {
         mIsInterruptive = interruptive;
+        final long now = System.currentTimeMillis();
+        mInterruptionTimeMs = interruptive ? now : mInterruptionTimeMs;
+
+        if (interruptive) {
+            MetricsLogger.action(getLogMaker()
+                    .setCategory(MetricsEvent.NOTIFICATION_INTERRUPTION)
+                    .setType(MetricsEvent.TYPE_OPEN)
+                    .addTaggedData(MetricsEvent.NOTIFICATION_SINCE_INTERRUPTION_MILLIS,
+                            getInterruptionMs(now)));
+            MetricsLogger.histogram(mContext, "note_interruptive", getInterruptionMs(now));
+        }
     }
 
     public void setTextChanged(boolean textChanged) {
@@ -1116,7 +1157,9 @@ public final class NotificationRecord {
                         sbn.getNotification().isGroupSummary() ? 1 : 0)
                 .addTaggedData(MetricsEvent.NOTIFICATION_SINCE_CREATE_MILLIS, getLifespanMs(now))
                 .addTaggedData(MetricsEvent.NOTIFICATION_SINCE_UPDATE_MILLIS, getFreshnessMs(now))
-                .addTaggedData(MetricsEvent.NOTIFICATION_SINCE_VISIBLE_MILLIS, getExposureMs(now));
+                .addTaggedData(MetricsEvent.NOTIFICATION_SINCE_VISIBLE_MILLIS, getExposureMs(now))
+                .addTaggedData(MetricsEvent.NOTIFICATION_SINCE_INTERRUPTION_MILLIS,
+                        getInterruptionMs(now));
     }
 
     public LogMaker getLogMaker() {
